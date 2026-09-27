@@ -16,6 +16,13 @@ import {
   Heading,
   IconButton,
   Input,
+  Modal,
+  ModalBody,
+  ModalCloseButton,
+  ModalContent,
+  ModalFooter,
+  ModalHeader,
+  ModalOverlay,
   NumberDecrementStepper,
   NumberIncrementStepper,
   NumberInput,
@@ -56,6 +63,7 @@ import { CSS } from '@dnd-kit/utilities';
 import {
   AlertCircle,
   ArrowDown,
+  ArrowLeftRight,
   ArrowUp,
   CheckCircle2,
   ChevronRight,
@@ -83,6 +91,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   colorPresets,
   detectConflicts,
+  resolveCuePosition,
   roleLabels,
   statusLabels
 } from './data';
@@ -96,7 +105,7 @@ import {
   formatTime,
   useLightingDesk
 } from './state/useLightingDesk';
-import type { Cue, CueConflict, LightingPlan, Scene, UserRole, Workspace } from './types';
+import type { Cue, CueConflict, LightingPlan, PositionSwap, Scene, UserRole, Workspace } from './types';
 
 const statusColors = {
   draft: 'orange',
@@ -110,6 +119,7 @@ function conflictLabel(conflict: CueConflict) {
     'follow-order': '跟随关系',
     'missing-data': '数据缺失',
     'duplicate-position': '灯位重复',
+    'position-swap': '临时换灯位',
     duration: '时间异常'
   }[conflict.type];
 }
@@ -120,10 +130,11 @@ interface SortableCueRowProps {
   selected: boolean;
   disabled: boolean;
   conflicts: CueConflict[];
+  displayPosition?: string;
   onSelect: () => void;
 }
 
-function SortableCueRow({ cue, index, selected, disabled, conflicts, onSelect }: SortableCueRowProps) {
+function SortableCueRow({ cue, index, selected, disabled, conflicts, displayPosition, onSelect }: SortableCueRowProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: cue.id,
     disabled
@@ -132,6 +143,7 @@ function SortableCueRow({ cue, index, selected, disabled, conflicts, onSelect }:
     transform: CSS.Transform.toString(transform),
     transition
   };
+  const swapped = Boolean(displayPosition && displayPosition !== cue.position);
 
   return (
     <Box
@@ -139,7 +151,9 @@ function SortableCueRow({ cue, index, selected, disabled, conflicts, onSelect }:
       style={style}
       role="option"
       aria-selected={selected}
-      aria-label={`${cue.number} ${cue.label}，${statusLabels[cue.status]}，${conflicts.length} 个冲突`}
+      aria-label={`${cue.number} ${cue.label}，${statusLabels[cue.status]}，${conflicts.length} 个冲突${
+        swapped ? `，临时换至${displayPosition}` : ''
+      }`}
       className={`cue-row ${selected ? 'active' : ''} ${isDragging ? 'dragging' : ''}`}
       borderBottomWidth="1px"
       borderColor="whiteAlpha.100"
@@ -171,9 +185,11 @@ function SortableCueRow({ cue, index, selected, disabled, conflicts, onSelect }:
           <Flex align="center" gap={2}>
             <Text fontWeight="650" noOfLines={1}>{cue.label}</Text>
             {cue.followCueId ? <Tag size="sm" variant="subtle" colorScheme="purple">跟随</Tag> : null}
+            {swapped ? <Tag size="sm" variant="subtle" colorScheme="cyan">临时灯位</Tag> : null}
           </Flex>
           <Text color="whiteAlpha.500" fontSize="xs" noOfLines={1}>
-            {cue.position} · {cue.channel} · {cue.color}
+            {swapped ? displayPosition : cue.position} · {cue.channel} · {cue.color}
+            {swapped ? `（原 ${cue.position}）` : ''}
           </Text>
         </Box>
         <Box w="72px" textAlign="right">
@@ -202,11 +218,12 @@ interface CueListProps {
   selectedCueId: string;
   canEdit: boolean;
   conflicts: CueConflict[];
+  positionOverrides: Map<string, string>;
   onSelect: (cueId: string) => void;
   onReorder: (activeId: string, overId: string) => void;
 }
 
-function CueList({ scene, selectedCueId, canEdit, conflicts, onSelect, onReorder }: CueListProps) {
+function CueList({ scene, selectedCueId, canEdit, conflicts, positionOverrides, onSelect, onReorder }: CueListProps) {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
@@ -230,6 +247,7 @@ function CueList({ scene, selectedCueId, canEdit, conflicts, onSelect, onReorder
               selected={cue.id === selectedCueId}
               disabled={!canEdit}
               conflicts={conflicts.filter((item) => item.cueId === cue.id)}
+              displayPosition={positionOverrides.get(cue.id)}
               onSelect={() => onSelect(cue.id)}
             />
           ))}
@@ -251,12 +269,13 @@ interface InspectorProps {
   workspace: Workspace;
   canEdit: boolean;
   conflicts: CueConflict[];
+  tempPosition?: string;
   onApply: (draft: Cue) => void;
   onDelete: () => void;
   onSelectCue: (cueId: string) => void;
 }
 
-function CueInspector({ cue, scene, workspace, canEdit, conflicts, onApply, onDelete, onSelectCue }: InspectorProps) {
+function CueInspector({ cue, scene, workspace, canEdit, conflicts, tempPosition, onApply, onDelete, onSelectCue }: InspectorProps) {
   const [draft, setDraft] = useState<Cue | null>(cue ? structuredClone(cue) : null);
 
   useEffect(() => {
@@ -294,6 +313,15 @@ function CueInspector({ cue, scene, workspace, canEdit, conflicts, onApply, onDe
           <AlertIcon />
           <AlertDescription fontSize="sm">
             {scene.frozen ? '该场次已冻结。解除冻结后才能修改。' : '当前角色只能查看或执行场次冻结，不能修改提示参数。'}
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {tempPosition && tempPosition !== cue.position ? (
+        <Alert status="info" borderRadius="lg">
+          <AlertIcon />
+          <AlertDescription fontSize="sm">
+            该提示已临时换至「{tempPosition}」（原灯位「{cue.position}」）。原方案内容保留，清除本次替换后恢复原灯位与冲突结果。
           </AlertDescription>
         </Alert>
       ) : null}
@@ -572,13 +600,17 @@ export default function App() {
   const [online, setOnline] = useState(true);
   const [savedAt, setSavedAt] = useState('');
   const [syncMessage, setSyncMessage] = useState('离线草稿待命');
+  const [swapDialogOpen, setSwapDialogOpen] = useState(false);
+  const [swapFrom, setSwapFrom] = useState('');
+  const [swapTo, setSwapTo] = useState('');
+  const [swapNote, setSwapNote] = useState('');
   const toast = useToast();
   const workspace = state.workspace;
   const activePlan = findActivePlan(workspace);
   const activeScene = findActiveScene(workspace);
   const selectedCue = findActiveCue(workspace);
   const comparePlan = workspace.plans.find((plan) => plan.id === workspace.comparePlanId) ?? workspace.plans[0];
-  const allConflicts = useMemo(() => detectConflicts(workspace.plans), [workspace.plans]);
+  const allConflicts = useMemo(() => detectConflicts(workspace.plans, workspace.swaps), [workspace.plans, workspace.swaps]);
   const activeConflicts = allConflicts.filter((item) => item.planId === activePlan.id);
   const activeCueConflicts = selectedCue
     ? allConflicts.filter((item) => item.cueId === selectedCue.id)
@@ -586,6 +618,30 @@ export default function App() {
   const editable = canEditScene(workspace.role, activeScene);
   const freezer = canFreeze(workspace.role);
   const incompleteCount = activePlan.scenes.flatMap((scene) => scene.cues).filter((cue) => cue.status !== 'confirmed').length;
+  const canSwap = workspace.role !== 'readonly';
+  const positionOverrides = useMemo(() => {
+    const map = new Map<string, string>();
+    if (!activeScene) return map;
+    for (const cue of activeScene.cues) {
+      const resolved = resolveCuePosition(activePlan.id, activeScene.id, cue.id, cue.position, workspace.swaps);
+      if (resolved !== cue.position) map.set(cue.id, resolved);
+    }
+    return map;
+  }, [activePlan.id, activeScene, workspace.swaps]);
+  const sceneSwaps = useMemo(
+    () => workspace.swaps.filter((swap) => swap.planId === activePlan.id && swap.sceneId === activeScene?.id),
+    [workspace.swaps, activePlan.id, activeScene?.id]
+  );
+  const scenePositions = useMemo(() => {
+    if (!activeScene) return [];
+    const positions = activeScene.cues.map((cue) =>
+      resolveCuePosition(activePlan.id, activeScene.id, cue.id, cue.position, workspace.swaps).trim()
+    );
+    return [...new Set(positions)].filter(Boolean);
+  }, [activePlan.id, activeScene, workspace.swaps]);
+  const selectedTempPosition = selectedCue && activeScene
+    ? resolveCuePosition(activePlan.id, activeScene.id, selectedCue.id, selectedCue.position, workspace.swaps)
+    : undefined;
 
   useEffect(() => {
     try {
@@ -703,6 +759,49 @@ export default function App() {
     });
   }
 
+  function openSwapDialog() {
+    if (!activeScene || scenePositions.length < 2) {
+      toast({ title: '本场可用灯位不足两个，无法临时换灯位', status: 'warning' });
+      return;
+    }
+    setSwapFrom(scenePositions[0]);
+    setSwapTo(scenePositions[1]);
+    setSwapNote('');
+    setSwapDialogOpen(true);
+  }
+
+  function createSwap() {
+    if (!activeScene || !swapFrom || !swapTo || swapFrom === swapTo) return;
+    const cueIds = activeScene.cues
+      .filter((cue) => resolveCuePosition(activePlan.id, activeScene.id, cue.id, cue.position, workspace.swaps) === swapFrom)
+      .map((cue) => cue.id);
+    if (!cueIds.length) {
+      toast({ title: `灯位「${swapFrom}」当前没有提示`, status: 'warning' });
+      return;
+    }
+    const note = swapNote.trim();
+    commit('临时换灯位', (next) => {
+      next.swaps.push({
+        id: `swap-${Date.now().toString(36)}`,
+        planId: next.activePlanId,
+        sceneId: activeScene.id,
+        fromPosition: swapFrom,
+        toPosition: swapTo,
+        note,
+        cueIds,
+        createdAt: new Date().toISOString()
+      });
+    });
+    setSwapDialogOpen(false);
+    toast({ title: `已将「${swapFrom}」的 ${cueIds.length} 条提示临时换至「${swapTo}」`, status: 'success', duration: 2200 });
+  }
+
+  function clearSwap(swapId: string) {
+    commit('清除临时换灯位，恢复原灯位', (next) => {
+      next.swaps = next.swaps.filter((swap) => swap.id !== swapId);
+    });
+  }
+
   function duplicatePlan() {
     const id = `plan-${Date.now().toString(36)}`;
     commit('复制为新方案', (next) => {
@@ -801,10 +900,30 @@ export default function App() {
   }
 
   function exportPlan() {
+    const positionSwaps = workspace.swaps
+      .filter((swap) => swap.planId === activePlan.id)
+      .map((swap) => {
+        const scene = activePlan.scenes.find((item) => item.id === swap.sceneId);
+        const cueNumbers = swap.cueIds
+          .map((id) => scene?.cues.find((cue) => cue.id === id)?.number)
+          .filter(Boolean);
+        return {
+          id: swap.id,
+          scene: scene?.name ?? swap.sceneId,
+          fromPosition: swap.fromPosition,
+          toPosition: swap.toPosition,
+          note: swap.note,
+          cueNumbers,
+          summary: `临时换灯位：「${swap.fromPosition}」→「${swap.toPosition}」，涉及 ${cueNumbers.join('、')}${
+            swap.note ? `；说明：${swap.note}` : ''
+          }`
+        };
+      });
     const payload = {
       exportedAt: new Date().toISOString(),
       plan: activePlan,
       conflicts: activeConflicts,
+      positionSwaps,
       role: workspace.role
     };
     const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' }));
@@ -982,6 +1101,7 @@ export default function App() {
                     <Flex align="center" gap={2}>
                       <Heading size="md">{activeScene.name}</Heading>
                       {activeScene.frozen ? <Tag colorScheme="green"><HStack spacing={1}><Lock size={12} /><Text>已冻结</Text></HStack></Tag> : <Tag variant="subtle">编辑中</Tag>}
+                      {sceneSwaps.length ? <Tag colorScheme="cyan" variant="subtle">临时换灯位 ×{sceneSwaps.length}</Tag> : null}
                     </Flex>
                     <Text color="whiteAlpha.500" fontSize="sm" mt={1}>
                       场次开始 {formatTime(activeScene.startTime)} · 时长 {formatTime(activeScene.duration)} · {activeScene.cues.length} 条提示
@@ -990,6 +1110,9 @@ export default function App() {
                   <Spacer />
                   <ButtonGroup size="sm" variant="outline">
                     <Button leftIcon={<Plus size={15} />} isDisabled={!editable} onClick={addCue}>新增提示</Button>
+                    <Button leftIcon={<ArrowLeftRight size={15} />} isDisabled={!canSwap || !activeScene.cues.length} onClick={openSwapDialog}>
+                      临时换灯位
+                    </Button>
                     <Button leftIcon={activeScene.frozen ? <LockOpen size={15} /> : <Lock size={15} />} isDisabled={!freezer} onClick={toggleFreeze}>
                       {activeScene.frozen ? '解除冻结' : '冻结场次'}
                     </Button>
@@ -1044,6 +1167,7 @@ export default function App() {
                 selectedCueId={workspace.selectedCueId}
                 canEdit={editable}
                 conflicts={activeConflicts}
+                positionOverrides={positionOverrides}
                 onSelect={(cueId) => selectCue(activeScene.id, cueId)}
                 onReorder={reorderCue}
               />
@@ -1075,6 +1199,7 @@ export default function App() {
                 <Tab>提示编辑</Tab>
                 <Tab>冲突 <Badge ml={1} colorScheme={activeConflicts.length ? 'orange' : 'green'}>{activeConflicts.length}</Badge></Tab>
                 <Tab>关系图</Tab>
+                <Tab>换灯位 <Badge ml={1} colorScheme={workspace.swaps.length ? 'cyan' : 'green'}>{workspace.swaps.length}</Badge></Tab>
               </TabList>
               <TabPanels>
                 <TabPanel px={4} pb={5}>
@@ -1086,6 +1211,7 @@ export default function App() {
                       workspace={workspace}
                       canEdit={editable}
                       conflicts={activeCueConflicts}
+                      tempPosition={selectedTempPosition}
                       onApply={applyCue}
                       onDelete={deleteCue}
                       onSelectCue={(cueId) => selectCue(activeScene.id, cueId)}
@@ -1129,6 +1255,72 @@ export default function App() {
                     </VStack>
                   ) : null}
                 </TabPanel>
+                <TabPanel px={4} pb={5}>
+                  <VStack align="stretch" spacing={3}>
+                    <Button
+                      size="sm"
+                      colorScheme="cyan"
+                      variant="outline"
+                      leftIcon={<ArrowLeftRight size={15} />}
+                      isDisabled={!canSwap || !activeScene?.cues.length}
+                      onClick={openSwapDialog}
+                    >
+                      临时换灯位
+                    </Button>
+                    <Text color="whiteAlpha.500" fontSize="xs" lineHeight="1.7">
+                      演出前临时拆换灯具时，把本场某个灯位上的提示统一调到备用灯位；原方案内容保留，清除替换后恢复原灯位与冲突结果。切换方案或场次后，未清除的替换仍会列在这里。
+                    </Text>
+                    {!workspace.swaps.length ? (
+                      <Flex minH="160px" align="center" justify="center" color="whiteAlpha.500" textAlign="center">
+                        <Box>
+                          <ArrowLeftRight size={30} style={{ margin: '0 auto 10px' }} />
+                          <Text fontSize="sm">当前没有未清除的临时换灯位</Text>
+                        </Box>
+                      </Flex>
+                    ) : (
+                      workspace.swaps.map((swap) => {
+                        const plan = workspace.plans.find((item) => item.id === swap.planId);
+                        const scene = plan?.scenes.find((item) => item.id === swap.sceneId);
+                        const cueNumbers = swap.cueIds
+                          .map((id) => scene?.cues.find((cue) => cue.id === id)?.number)
+                          .filter(Boolean)
+                          .join('、');
+                        const isCurrent = swap.planId === workspace.activePlanId && swap.sceneId === workspace.selectedSceneId;
+                        return (
+                          <Box key={swap.id} p={3} borderRadius="lg" borderWidth="1px" borderColor="cyan.700" bg="blackAlpha.300">
+                            <Flex align="center" gap={2} mb={1}>
+                              <ArrowLeftRight size={14} color="#76e4f7" />
+                              <Text fontSize="sm" fontWeight="700">「{swap.fromPosition}」→「{swap.toPosition}」</Text>
+                              <Spacer />
+                              {isCurrent ? <Tag size="sm" colorScheme="cyan" variant="subtle">本场</Tag> : null}
+                            </Flex>
+                            <Text color="whiteAlpha.600" fontSize="xs">
+                              {plan?.name ?? '未知方案'} · {scene?.name ?? '未知场次'} · 涉及 {cueNumbers || '—'}
+                            </Text>
+                            {swap.note ? <Text mt={1} color="whiteAlpha.600" fontSize="xs">说明：{swap.note}</Text> : null}
+                            <HStack mt={2} spacing={2}>
+                              {!isCurrent && plan && scene ? (
+                                <Button
+                                  size="xs"
+                                  variant="ghost"
+                                  onClick={() => {
+                                    dispatch({ type: 'selectPlan', planId: plan.id });
+                                    dispatch({ type: 'selectScene', sceneId: scene.id });
+                                  }}
+                                >
+                                  跳转到该场次
+                                </Button>
+                              ) : null}
+                              <Button size="xs" colorScheme="red" variant="ghost" isDisabled={!canSwap} onClick={() => clearSwap(swap.id)}>
+                                清除替换
+                              </Button>
+                            </HStack>
+                          </Box>
+                        );
+                      })
+                    )}
+                  </VStack>
+                </TabPanel>
               </TabPanels>
             </Tabs>
           </Box>
@@ -1139,6 +1331,51 @@ export default function App() {
           </Box>
         </Box>
       </Grid>
+
+      <Modal isOpen={swapDialogOpen} onClose={() => setSwapDialogOpen(false)} isCentered>
+        <ModalOverlay />
+        <ModalContent bg="stage.800" borderWidth="1px" borderColor="whiteAlpha.200">
+          <ModalHeader>临时换灯位 · {activeScene?.name}</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody>
+            <VStack align="stretch" spacing={4}>
+              <Text color="whiteAlpha.600" fontSize="sm">
+                把来源灯位上的全部提示临时调到去向灯位，原方案内容保留；清除本次替换即可恢复。
+              </Text>
+              <FormControl>
+                <FormLabel htmlFor="swap-from">来源灯位（当前生效）</FormLabel>
+                <Select id="swap-from" value={swapFrom} onChange={(event) => setSwapFrom(event.target.value)}>
+                  {scenePositions.map((position) => <option key={position} value={position}>{position}</option>)}
+                </Select>
+              </FormControl>
+              <FormControl>
+                <FormLabel htmlFor="swap-to">去向（备用灯位）</FormLabel>
+                <Select id="swap-to" value={swapTo} onChange={(event) => setSwapTo(event.target.value)}>
+                  {scenePositions.map((position) => <option key={position} value={position}>{position}</option>)}
+                </Select>
+                {swapFrom && swapFrom === swapTo ? (
+                  <Text mt={1} color="orange.300" fontSize="xs">来源与去向不能相同。</Text>
+                ) : null}
+              </FormControl>
+              <FormControl>
+                <FormLabel htmlFor="swap-note">说明（随方案导出）</FormLabel>
+                <Input
+                  id="swap-note"
+                  value={swapNote}
+                  onChange={(event) => setSwapNote(event.target.value)}
+                  placeholder="例如：左前区灯具故障，临时改用备用灯位"
+                />
+              </FormControl>
+            </VStack>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="ghost" mr={3} onClick={() => setSwapDialogOpen(false)}>取消</Button>
+            <Button colorScheme="cyan" isDisabled={!swapFrom || !swapTo || swapFrom === swapTo} onClick={createSwap}>
+              确认换位
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
 
       <Box as="footer" maxW="1920px" mx="auto" px={5} pb={7} color="whiteAlpha.400" fontSize="xs" textAlign="center">
         所有方案与草稿保存在当前浏览器。清除站点数据会删除灯光设计台内容。

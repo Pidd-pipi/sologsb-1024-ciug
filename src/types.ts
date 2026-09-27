@@ -47,12 +47,24 @@ export interface CueConflict {
   cueId: string;
   sceneId: string;
   severity: ConflictSeverity;
-  type: 'channel-overlap' | 'follow-order' | 'missing-data' | 'duplicate-position' | 'duration';
+  type: 'channel-overlap' | 'follow-order' | 'missing-data' | 'duplicate-position' | 'duration' | 'position-swap';
   message: string;
+}
+
+export interface PositionSwap {
+  id: string;
+  planId: string;
+  sceneId: string;
+  fromPosition: string;
+  toPosition: string;
+  note: string;
+  cueIds: string[];
+  createdAt: string;
 }
 
 export interface Workspace {
   plans: LightingPlan[];
+  swaps: PositionSwap[];
   activePlanId: string;
   comparePlanId: string;
   selectedSceneId: string;

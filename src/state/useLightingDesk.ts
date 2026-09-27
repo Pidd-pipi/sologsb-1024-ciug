@@ -12,6 +12,7 @@ export function createInitialWorkspace(): Workspace {
   const plans = recalculatePlans(clone(samplePlans));
   return {
     plans,
+    swaps: [],
     activePlanId: plans[0].id,
     comparePlanId: plans[1].id,
     selectedSceneId: plans[0].scenes[0].id,
@@ -42,6 +43,15 @@ export type EditorAction =
 
 function normalizeWorkspace(workspace: Workspace) {
   recalculatePlans(workspace.plans);
+  workspace.swaps = (workspace.swaps ?? [])
+    .map((swap) => {
+      const plan = workspace.plans.find((item) => item.id === swap.planId);
+      const scene = plan?.scenes.find((item) => item.id === swap.sceneId);
+      if (!scene) return null;
+      const cueIds = swap.cueIds.filter((id) => scene.cues.some((cue) => cue.id === id));
+      return cueIds.length ? { ...swap, cueIds } : null;
+    })
+    .filter((swap): swap is NonNullable<typeof swap> => Boolean(swap));
   const active = workspace.plans.find((plan) => plan.id === workspace.activePlanId) ?? workspace.plans[0];
   if (!active) return workspace;
   workspace.activePlanId = active.id;
