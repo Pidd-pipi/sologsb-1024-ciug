@@ -16,7 +16,8 @@ export function createInitialWorkspace(): Workspace {
     comparePlanId: plans[1].id,
     selectedSceneId: plans[0].scenes[0].id,
     selectedCueId: plans[0].scenes[0].cues[0].id,
-    role: 'designer'
+    role: 'designer',
+    positionSwaps: []
   };
 }
 
@@ -42,6 +43,12 @@ export type EditorAction =
 
 function normalizeWorkspace(workspace: Workspace) {
   recalculatePlans(workspace.plans);
+  if (!Array.isArray(workspace.positionSwaps)) workspace.positionSwaps = [];
+  workspace.positionSwaps = workspace.positionSwaps.filter((swap) =>
+    workspace.plans.some(
+      (plan) => plan.id === swap.planId && plan.scenes.some((scene) => scene.id === swap.sceneId)
+    )
+  );
   const active = workspace.plans.find((plan) => plan.id === workspace.activePlanId) ?? workspace.plans[0];
   if (!active) return workspace;
   workspace.activePlanId = active.id;
@@ -167,6 +174,10 @@ export function canEditScene(role: UserRole, scene: Scene | undefined) {
 
 export function canFreeze(role: UserRole) {
   return role === 'designer' || role === 'stage-manager';
+}
+
+export function canSwapPositions(role: UserRole) {
+  return role === 'designer' || role === 'programmer';
 }
 
 export function formatTime(value: number | undefined) {

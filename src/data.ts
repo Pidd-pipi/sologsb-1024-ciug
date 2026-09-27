@@ -1,4 +1,4 @@
-import type { Cue, CueConflict, LightingPlan, Scene, UserRole } from './types';
+import type { Cue, CueConflict, LightingPlan, PositionSwap, Scene, UserRole } from './types';
 
 const FIXED_TIME = '2026-09-25T02:00:00.000Z';
 
@@ -161,10 +161,25 @@ export function recalculatePlans(plans: LightingPlan[]) {
   return plans;
 }
 
-export function detectConflicts(plans: LightingPlan[]): CueConflict[] {
+export function swapsForScene(swaps: PositionSwap[], planId: string, sceneId: string) {
+  return swaps.filter((swap) => swap.planId === planId && swap.sceneId === sceneId);
+}
+
+export function swapForCue(swaps: PositionSwap[], planId: string, sceneId: string, cueId: string) {
+  return swaps.find(
+    (swap) => swap.planId === planId && swap.sceneId === sceneId && swap.cueIds.includes(cueId)
+  );
+}
+
+export function effectivePosition(cue: Cue, swaps: PositionSwap[], planId: string, sceneId: string) {
+  return swapForCue(swaps, planId, sceneId, cue.id)?.targetPosition ?? cue.position;
+}
+
+export function detectConflicts(plans: LightingPlan[], swaps: PositionSwap[] = []): CueConflict[] {
   const conflicts: CueConflict[] = [];
   for (const plan of plans) {
     for (const scene of plan.scenes) {
+      const sceneSwaps = swapsForScene(swaps, plan.id, scene.id);
       const byChannel = new Map<string, Cue[]>();
       const positions = new Map<string, Cue[]>();
       for (const item of scene.cues) {
@@ -225,20 +240,38 @@ export function detectConflicts(plans: LightingPlan[]): CueConflict[] {
           });
         }
         byChannel.set(item.channel, [...(byChannel.get(item.channel) ?? []), item]);
-        positions.set(item.position, [...(positions.get(item.position) ?? []), item]);
+        const position = effectivePosition(item, sceneSwaps, plan.id, scene.id);
+        positions.set(position, [...(positions.get(position) ?? []), item]);
       }
 
       for (const [position, items] of positions) {
         if (items.length > 1 && position !== '全台' && position !== '天幕') {
-          conflicts.push({
-            id: `${plan.id}-${scene.id}-${position}-duplicate`,
-            planId: plan.id,
-            sceneId: scene.id,
-            cueId: items[1].id,
-            severity: 'warning',
-            type: 'duplicate-position',
-            message: `${position} 被多个提示使用，请确认是否为有意的分区叠光`
-          });
+          const swap = sceneSwaps.find(
+            (candidate) =>
+              candidate.targetPosition === position && items.some((item) => candidate.cueIds.includes(item.id))
+          );
+          if (swap) {
+            const numbers = items.map((item) => item.number).join('、');
+            conflicts.push({
+              id: `${plan.id}-${scene.id}-${swap.id}-swap`,
+              planId: plan.id,
+              sceneId: scene.id,
+              cueId: swap.cueIds[0] ?? items[0].id,
+              severity: 'warning',
+              type: 'position-swap',
+              message: `临时换灯位：${numbers} 临时集中到 ${position}，请现场确认是否允许同灯位叠加`
+            });
+          } else {
+            conflicts.push({
+              id: `${plan.id}-${scene.id}-${position}-duplicate`,
+              planId: plan.id,
+              sceneId: scene.id,
+              cueId: items[1].id,
+              severity: 'warning',
+              type: 'duplicate-position',
+              message: `${position} 被多个提示使用，请确认是否为有意的分区叠光`
+            });
+          }
         }
       }
     }

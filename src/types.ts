@@ -47,8 +47,20 @@ export interface CueConflict {
   cueId: string;
   sceneId: string;
   severity: ConflictSeverity;
-  type: 'channel-overlap' | 'follow-order' | 'missing-data' | 'duplicate-position' | 'duration';
+  type: 'channel-overlap' | 'follow-order' | 'missing-data' | 'duplicate-position' | 'position-swap' | 'duration';
   message: string;
+}
+
+export interface PositionSwap {
+  id: string;
+  planId: string;
+  sceneId: string;
+  sourcePosition: string;
+  targetPosition: string;
+  cueIds: string[];
+  cueNumbers: string[];
+  note: string;
+  createdAt: string;
 }
 
 export interface Workspace {
@@ -58,6 +70,7 @@ export interface Workspace {
   selectedSceneId: string;
   selectedCueId: string;
   role: UserRole;
+  positionSwaps: PositionSwap[];
 }
 
 export interface EditorState {
